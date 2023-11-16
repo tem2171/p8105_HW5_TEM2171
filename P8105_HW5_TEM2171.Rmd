@@ -9,129 +9,94 @@ library(tidyverse)
 ```
 
 # PROBLEM 2
-The code chunk below imports the data in individual spreadsheets
-contained in `./data/zip_data/`. To do this, I create a dataframe that
-includes the list of all files in that directory and the complete path
-to each file. As a next step, I `map` over paths and import data using
-the `read_csv` function. Finally, I `unnest` the result of `map`.
 
-```{r}
-full_df <- tibble(
-  files = list.files("data/zip_data/"),
-  path = str_c("data/zip_data/", files)
-) %>% 
+Create a tidy dataframe containing data from all participants, including the subject ID, arm, and observations over time:
+
+```{r setup, include=FALSE}
+all_participants_df <- 
+  tibble(
+    files = list.files("data"),
+    path = str_c("data/", files)
+  ) %>% 
   mutate(data = map(path, read_csv)) %>% 
-  unnest(cols = c(data))
-```
+  unnest()
 
-The result of the previous code chunk isn’t tidy – data are wide rather
-than long, and some important variables are included as parts of others.
-The code chunk below tides the data using string manipulations on the
-file, converting from wide to long, and selecting relevant variables.
-
-```{r}
-tidy_df = 
-  full_df %>% 
+all_participants_tidy_df <- 
+  all_participants_df %>% 
   mutate(
     files = str_replace(files, ".csv", ""),
-    group = str_sub(files, 1, 3)) %>% 
+    group = str_sub(files, 1, 3)
+  ) %>% 
   pivot_longer(
-    week_1:week_8,
+    cols = starts_with("week_"),
     names_to = "week",
     values_to = "outcome",
-    names_prefix = "week_") %>% 
+    names_prefix = "week_"
+  ) %>% 
   mutate(week = as.numeric(week)) %>% 
   select(group, subj = files, week, outcome)
 ```
 
-Finally, the code chunk below creates a plot showing individual data,
-faceted by group.
+Make a spaghetti plot showing observations on each subject over time, and comment on differences between groups:
 
 ```{r}
-tidy_df %>% 
-  ggplot(aes(x = week, y = outcome, group = subj, color = group)) + 
-  geom_point() + 
-  geom_path() + 
-  facet_grid(~group)
+all_participants_tidy_df |> 
+  ggplot(aes(x = week, y = outcome, group = subj, color = group)) + geom_path() + facet_grid(~group)
 ```
 
-This plot suggests high within-subject correlation – subjects who start
-above average end up above average, and those that start below average
-end up below average. Subjects in the control group generally don’t
-change over time, but those in the experiment group increase their
-outcome in a roughly linear way.
+For the control arm, the outcomes on average stay the same while for the experimental arm, we see on average an increaase in the outcomes.
 
 #PROBLEM 3
-Below are some functions we need for the simulation.
-
-We’ll start with a function that uses simulates a sample, conducts a
-test, and uses `broom::tidy` to cleanly format the results.
+First set the following design elements:
 
 ```{r}
-sim_t_test = function(n_samp = 30, mu = 2, sigma = 5) {
+n <- 30
+sigma <- 5
+alpha <- 0.05
+num_simulations <- 5000
+```
+
+```{r}
+t_test_simulation = function(mu) {
   
-  sim_data = tibble(
-    x = rnorm(n_samp, mean = mu, sd = sigma)
+  simulation_data = tibble(
+    x = rnorm(n, mean = mu, sd = sigma)
   )
   
-  test = t.test(x ~ 1, data = sim_data)
+  test = t.test(x ~ 1, data = simulation_data)
   
   broom::tidy(test) 
   
 }
 ```
 
-Using this function, along with `rerun` and `map`, I’ll create 5000
-datasets from the model for each $\mu \in \{0, 1, 2, 3, 4, 5, 6\}$ and
-save the results.
-
 ```{r}
-sim_results = 
+simulation_test_results <- 
   tibble(mu = 0:6) %>% 
   mutate(
-    output_lists = map(.x = mu, ~rerun(5000, sim_t_test(n = 30, mu = .x))),
+    output_lists = map(mu, ~rerun(num_simulations, t_test_simulation(.x))),
     estimate_dfs = map(output_lists, bind_rows)
   ) %>% 
   select(-output_lists)
-```
 
-
-The chunk below does some tidying up of the simulation results by
-focusing only on estimates for the `x` term in our model and creating an
-indicator for statistical significance of a test that the mean is equal
-to zero.
-
-```{r}
-sim_results = 
-  sim_results %>% 
+simulation_test_results = 
+  simulation_test_results %>% 
   unnest(estimate_dfs) %>% 
   select(mu, estimate, p.value) %>% 
-  mutate(significant = as.numeric(p.value < 0.05))
+  mutate(significant = as.numeric(p.value < alpha))
+
 ```
-
-
-The plot below shows the proportion of times the null was rejected
-(i.e. the power of the test for a fixed alternative) on the y axis and
-the true value of $\mu$ on the x axis.
-
-
-The power increases as the effect size of $\mu$ increases. For $\mu=0$,
-the probability of rejection is near 0.05, which is exactly as expected.
-
-The next plot shows the average of $\hat{\mu}$ on the y axis and the
-true value of $\beta_1$ on the x axis (in red), along with the average
-of $\hat{\mu}$ in cases for which the null is rejected.
 
 ```{r}
 summary_all = 
-  sim_results %>% 
+  simulation_test_results %>% 
   group_by(mu) %>%
   summarize(average = mean(estimate)) %>% 
   mutate(case = "all")
 
 summary_signif = 
-  sim_results %>% 
-  filter(p.value < 0.05) %>% 
+  simulation_test_results %>% 
+  filter(p.value < alpha) %>% 
   group_by(mu) %>%
   summarize(average = mean(estimate)) %>% 
   mutate(case = "signif only")
@@ -142,30 +107,8 @@ bind_rows(summary_all, summary_signif) %>%
   geom_path() 
 ```
 
-
-As before, the average of $\hat{\mu}$ is approximately equal to the true
-value when looking at all simulated datasets for that true value.
-However, the sample average of $\hat{\mu}$ only when the null hypothesis
-is rejected is not approximately equal to the true value of $\mu$.
-
-To help see why this is the case, the following figure shows the
-distribution of $\hat{\mu}$ values, separately for each true $\mu_1$ and
-according to whether the associated test rejects the null hypothesis.
-
 ```{r}
-sim_results %>% 
+simulation_test_results %>% 
   ggplot(aes(x = estimate)) + geom_histogram() + 
   facet_grid(significant ~ mu)
 ```
-
-For small true effect sizes (i.e. not far away from 0), only those
-estimates that are **by chance** far away from 0 (and the true value)
-can be rejected. For large effect sizes, the overall average and
-rejected average are quite similar, as the true value is already far
-from 0. For the special case 0, samples in both tails (both positive and
-negative) are rejected with equal probability and the average is close
-to the true value.
-
-The scary implication is that, when the true effect is small, it is
-likely that effect estimates reported in the literature are
-substantially larger than the true value.
